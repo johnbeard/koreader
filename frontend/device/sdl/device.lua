@@ -2,6 +2,10 @@ local Event = require("ui/event")
 local Generic = require("device/generic/device")
 local SDL = require("ffi/SDL2_0")
 local logger = require("logger")
+local http = require('socket.http')
+local ltn12 = require('ltn12')
+local socket = require('socket')
+local url = require('socket.url')
 
 local function yes() return true end
 local function no() return false end
@@ -127,6 +131,57 @@ local UbuntuTouch = Device:new{
     hasFrontlight = yes,
 }
 
+function fetchFileFromUrl(item_url)
+    local request, sink = {}, {}
+    local parsed = url.parse(item_url)
+    local hostname = parsed.host
+    request['url'] = item_url
+    request['method'] = "GET"
+    request['sink'] = ltn12.sink.table(sink)
+    request['headers'] = { ["Host"] = hostname, }
+    logger.info("request", request)
+    http.TIMEOUT = 10
+    local httpRequest = http.request
+    local code, headers = socket.skip(1, httpRequest(request))
+    -- raise error message when network is unavailable
+    if headers == nil then
+        error(code)
+    end
+    if code == 200 then
+
+        content_type = headers['content-type']
+
+        local content = table.concat(sink)
+        if content ~= "" then
+            return content, content_type
+        end
+    end
+end
+
+function handleDroppedUrl(url)
+    local content, cnt_type = fetchFileFromUrl(url)
+
+    -- local home = G_reader_settings:readSetting("home_dir");
+
+    local ext = ""
+    if cnt_type == "application/epub+zip" then
+        ext = ".epub"
+    elseif cnt_type == "application/pdf" then
+        ext = ".pdf"
+    elseif cnt_type == "application/x-mobipocket-ebook" then
+        ext = ".mobi"
+    end
+
+    local filename = "/tmp/downloaded_ebook" .. ext
+
+    local file = io.open(filename, "w")
+    file:write(content)
+    file:close()
+
+    local ReaderUI = require("apps/reader/readerui")
+    ReaderUI:doShowReader(filename)
+end
+
 function Device:init()
     -- allows to set a viewport via environment variable
     -- syntax is Lua table syntax, e.g. EMULATE_READER_VIEWPORT="{x=10,w=550,y=5,h=790}"
@@ -174,6 +229,7 @@ function Device:init()
             local SDL_MOUSEWHEEL = 1027
             local SDL_MULTIGESTURE = 2050
             local SDL_DROPFILE = 4096
+            local SDL_DROPTEXT = 4097
             local SDL_WINDOWEVENT_MOVED = 4
             local SDL_WINDOWEVENT_RESIZED = 5
 
@@ -236,6 +292,11 @@ function Device:init()
                 if dropped_file_path and dropped_file_path ~= "" then
                     local ReaderUI = require("apps/reader/readerui")
                     ReaderUI:doShowReader(dropped_file_path)
+                end
+            elseif ev.code == SDL_DROPTEXT then
+                local dropped_text = ev.value
+                if dropped_text and dropped_text:match("^https?://") then
+                    handleDroppedUrl(dropped_text)
                 end
             elseif ev.code == SDL_WINDOWEVENT_RESIZED then
                 device_input.device.screen.screen_size.w = ev.value.data1
